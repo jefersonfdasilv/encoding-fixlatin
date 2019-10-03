@@ -24,7 +24,7 @@ my $utf8_3    = qr{\A([\xE0-\xEF])($cont_byte)($cont_byte)(.*)\z}s;
 my $utf8_4    = qr{\A([\xF0-\xF7])($cont_byte)($cont_byte)($cont_byte)(.*)\z}s;
 my $utf8_5    = qr{\A([\xF8-\xFB])($cont_byte)($cont_byte)($cont_byte)($cont_byte)(.*)\z}s;
 
-my %known_opt = map { $_ => 1 } qw(bytes_only ascii_hex overlong_fatal use_xs);
+my %known_opt = map { $_ => 1 } qw(bytes_only ascii_hex overlong_fatal use_xs strict_utf8);
 
 my %non_1252  = (
     "\x81" => '%81',
@@ -40,6 +40,7 @@ sub fix_latin {
         ascii_hex      => 1,
         bytes_only     => 0,
         overlong_fatal => 0,
+        strict_utf8    => 0,
         use_xs         => 'auto',
         @_
     );
@@ -61,7 +62,7 @@ sub fix_latin {
         }
     }
 
-    if($xs_loaded and $opt{use_xs} ne 'never') {
+    if($xs_loaded and $opt{use_xs} ne 'never' and not $opt{strict_utf8}) {
         my $olf = $opt{overlong_fatal} ? 1 : 0;
         my $asx = $opt{ascii_hex}      ? 1 : 0;
         local($@);
@@ -91,34 +92,42 @@ sub _fix_latin_pp {
     my $rest   = '';
     my $olf    = $opt->{overlong_fatal};
     while(length($input) > 0) {
+        my $is_ascii = 0;
+        my $output_add = '';
         if($input =~ $ascii_str) {
-            $output .= $1;
+            $output_add = $1;
             $rest = $2;
+            $is_ascii = 1;
         }
         elsif($input =~ $utf8_2) {
-            $output .= _decode_utf8($olf, ord($1) & 0x1F, $1, $2);
+            $output_add = _decode_utf8($olf, ord($1) & 0x1F, $1, $2);
             $rest = $3;
         }
         elsif($input =~ $utf8_3) {
-            $output .= _decode_utf8($olf, ord($1) & 0x0F, $1, $2, $3);
+            $output_add = _decode_utf8($olf, ord($1) & 0x0F, $1, $2, $3);
             $rest = $4;
         }
         elsif($input =~ $utf8_4) {
-            $output .= _decode_utf8($olf, ord($1) & 0x07, $1, $2, $3, $4);
+            $output_add = _decode_utf8($olf, ord($1) & 0x07, $1, $2, $3, $4);
             $rest = $5;
         }
         elsif($input =~ $utf8_5) {
-            $output .= _decode_utf8($olf, ord($1) & 0x03, $1, $2, $3, $4, $5);
+            $output_add = _decode_utf8($olf, ord($1) & 0x03, $1, $2, $3, $4, $5);
             $rest = $6;
         }
         else {
             ($char, $rest) = $input =~ /^(.)(.*)$/s;
             if($opt->{ascii_hex} && exists $non_1252{$char}) {
-                $output .= $non_1252{$char};
+                $output_add = $non_1252{$char};
             }
             else {
-                $output .= $byte_map->{$char};
+                $output_add = $byte_map->{$char};
             }
+        }
+        if($is_ascii or not $opt->{strict_utf8} or _pg_utf8_islegal($output_add)){
+            $output .= $output_add;
+        } else {
+            $output .= encode_utf8('?' x length($output_add));
         }
         $input = $rest;
     }
@@ -205,6 +214,73 @@ sub _add_cp1252_mappings {
     }
 }
 
+# The following code has been translated by Alberto Pianon <alberto@pianon.eu>.
+# Original C code by Tatsuo Ishii, see Postgresql sources 
+# (postgres/src/backend/utils/mb/wchar.c)
+# See LICENSE.postgres for license and copyright information.
+# Solution inspired by this blog post by Greg Sabino Mullane (Endpoint):
+# https://www.endpoint.com/blog/2017/07/21/postgres-migrating-sqlascii-to-utf-8
+ 
+sub _pg_utf8_islegal {
+  my $source = shift;
+  my $length = length($source);
+  my $a;
+  my $x;
+  if($length > 4) {
+      return 0;
+  }
+  if($length == 4) {
+      $a = vec($source,3,8);
+      if ($a < 0x80 || $a > 0xBF) {
+          return 0;
+      }
+  } # Fall thru
+  if($length >= 3){
+      $a = vec($source,2,8);
+      if ($a < 0x80 || $a > 0xBF) {
+          return 0;
+      }
+  } # Fall thru
+  if($length >= 2){
+      $x = vec($source,0,8);
+      $a = vec($source,1,8);
+      if($x == 0xE0) {
+          if ($a < 0xA0 || $a > 0xBF) {
+              return 0;
+          }
+      }
+      elsif($x == 0xED) {
+          if ($a < 0x80 || $a > 0x9F) {
+              return 0;
+          }
+      }
+      elsif($x == 0xF0) {
+          if ($a < 0x90 || $a > 0xBF) {
+              return 0;
+          }
+      }
+      elsif($x == 0xF4) {
+          if ($a < 0x80 || $a > 0x8F) {
+              return 0;
+          }
+      }
+      else {
+          if ($a < 0x80 || $a > 0xBF) {
+              return 0;
+          }
+      } 
+  } # Fall thru
+  if($length >= 1){
+      $a = vec($source,0,8);
+      if ($a >= 0x80 && $a < 0xC2) {
+          return 0;
+      }
+      if ($a > 0xF4) {
+          return 0;
+      }
+  }
+  return 1;
+}
 
 1;
 
@@ -369,6 +445,14 @@ if it is not available.
 =item *
 
 'never' means no attempt will be made to use the XS module.
+
+=item strict_utf8 => 1/0
+
+If set to 1, it does not allow "invalid" UTF-8 to pass on through; invalid UTF-8
+characters will be substituted by '?'. Enabling this option will disable the use
+of XS module. The criteria to evaluate if UTF-8 is valid have been taken from
+Postgresql. Indeed, this option is mainly intended to be used to convert
+Postgresql DB dump data from SQL_ASCII encoding to UTF-8.
 
 =back
 

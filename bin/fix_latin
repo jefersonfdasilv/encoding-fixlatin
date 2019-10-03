@@ -24,7 +24,7 @@ use Encoding::FixLatin qw(fix_latin);
 
 my %opt;
 
-if(!GetOptions(\%opt, 'help|?', 'version|v', 'use_xs|use-xs=s')) {
+if(!GetOptions(\%opt, 'help|?', 'version|v', 'use_xs|use-xs=s', 'strict_utf8|strict-utf8')) {
     pod2usage(-exitval => 1,  -verbose => 0);
 }
 
@@ -41,9 +41,10 @@ if($opt{version}) {
 }
 
 my @use_xs = ( use_xs => $opt{use_xs} || 'auto' );
+my @strict_utf8 = (strict_utf8 => $opt{strict_utf8} || 0);
 
 while(<>) {
-    $_ = fix_latin($_, bytes_only => 1, @use_xs) if /[^\x00-\x7f]/;
+    $_ = fix_latin($_, bytes_only => 1, @use_xs, @strict_utf8) if /[^\x00-\x7f]/;
     print;
 }
 
@@ -89,6 +90,14 @@ byte characters will be converted as follows:
 Override default ('auto') behaviour of trying to use XS module and falling back
 to pure-Perl version if not available.  Set to 'never' to always use the Perl
 version or 'always' to always use XS and die if not available.
+
+=item B<--strict-utf8>
+
+Do not allow "invalid" UTF-8 to pass on through; invalid UTF-8 characters will
+be substituted by '?'. Enabling this option will disable the use of XS module.
+The criteria to evaluate if UTF-8 is valid have been taken from Postgresql.
+Indeed, this option is mainly intended to be used to convert Postgresql DB dump
+data from SQL_ASCII encoding to UTF-8.
 
 =item B<--version> (alias -v)
 
