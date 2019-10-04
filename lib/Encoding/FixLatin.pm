@@ -278,6 +278,11 @@ sub _pg_utf8_islegal {
       if ($a > 0xF4) {
           return 0;
       }
+      if ($a == 0x0A || $a == 0x0D) {
+          # C08A and C08D are decoded as 0A and 0D by sub _decode_utf8, 
+          # but it is not a valid conversion
+          return 0; 
+      }
   }
   return 1;
 }
